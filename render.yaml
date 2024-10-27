@@ -1,0 +1,9 @@
+version: 1
+services:
+  - type: web
+    name: leetcode-scraper
+    env: python
+    plan: starter
+    runtime: python3.9  # Change this according to your Python version
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
