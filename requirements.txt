@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+numpy
+librosa
+tensorflow
+joblib
+requests
+ffmpeg-python
+opencv-python
+speechrecognition
+pydub
+noisereduce
+python-dotenv
+google-generativeai
