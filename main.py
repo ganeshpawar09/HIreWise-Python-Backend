@@ -18,8 +18,10 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import ffmpeg
 
+# Load environment variables
 load_dotenv()
 
+# Initialize FastAPI app
 app = FastAPI(title="HireWise AI Analysis API")
 
 # Enable CORS
@@ -35,6 +37,18 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Set up model paths dynamically
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR = os.path.join(BASE_DIR, "app")
+
+MODEL_PATHS = {
+    "audio_confidence": os.path.join(APP_DIR, "confidence_model.tflite"),
+    "audio_fluency": os.path.join(APP_DIR, "fluency_model.tflite"),
+    "video_confidence": os.path.join(APP_DIR, "video_confidence.tflite"),
+    "scaler_confidence": os.path.join(APP_DIR, "confidence_scaler.pkl"),
+    "scaler_fluency": os.path.join(APP_DIR, "fluency_scaler.pkl"),
+}
+
 # Global variables for models and scalers
 audio_confidence_model = None
 audio_fluency_model = None
@@ -42,6 +56,24 @@ cnn_model = None
 scaler_confidence = None
 scaler_fluency = None
 
+
+@app.on_event("startup")
+def load_models():
+    """Loads all ML models and scalers at startup."""
+    global audio_confidence_model, audio_fluency_model, scaler_confidence, scaler_fluency, cnn_model
+
+    try:
+        audio_confidence_model = load_tflite_model(MODEL_PATHS["audio_confidence"])
+        audio_fluency_model = load_tflite_model(MODEL_PATHS["audio_fluency"])
+        cnn_model = load_tflite_model(MODEL_PATHS["video_confidence"])
+        scaler_confidence = joblib.load(MODEL_PATHS["scaler_confidence"])
+        scaler_fluency = joblib.load(MODEL_PATHS["scaler_fluency"])
+
+        logger.info("✅ All models and scalers loaded successfully")
+
+    except Exception as e:
+        logger.error(f"❌ Model loading failed: {str(e)}")
+        raise RuntimeError(f"Model loading failed: {str(e)}")
 
 @app.post("/process-video")
 async def process_video(request: Request):
@@ -105,24 +137,6 @@ async def process_video(request: Request):
         if temp_audio_path and os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
 
-@app.on_event("startup")
-def load_models():
-    """Loads all ML models and scalers at startup"""
-    global audio_confidence_model, audio_fluency_model, scaler_confidence, scaler_fluency, cnn_model
-    
-    try:
-
-        audio_confidence_model = load_tflite_model(r"D:\Final Year Project\Final Year Project Code\hirewise python backend\app\confidence_model.tflite")
-        audio_fluency_model = load_tflite_model(r"D:\Final Year Project\Final Year Project Code\hirewise python backend\app\fluency_model.tflite")
-        cnn_model = load_tflite_model(r"D:\Final Year Project\Final Year Project Code\hirewise python backend\app\video_confidence.tflite")
-        scaler_confidence = joblib.load(r"D:\Final Year Project\Final Year Project Code\hirewise python backend\app\confidence_scaler.pkl")
-        scaler_fluency = joblib.load(r"D:\Final Year Project\Final Year Project Code\hirewise python backend\app\fluency_scaler.pkl")
-        
-        logger.info("✅ All models and scalers loaded successfully")
-        
-    except Exception as e:
-        logger.error(f"❌ Model loading failed: {str(e)}")
-        raise RuntimeError(f"Model loading failed: {str(e)}")
 
 def load_tflite_model(model_path):
     interpreter = tf.lite.Interpreter(model_path=model_path)
