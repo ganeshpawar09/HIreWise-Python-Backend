@@ -2,7 +2,7 @@ import json
 import google.generativeai as genai
 
 # Initialize Gemini AI client
-genai.configure(api_key="AIzaSyCTrhpzFdGWxt0wclWV_-Zv2H35xjlQwxY")
+genai.configure(api_key="AY")
 
 def analyze_response(question: str, transcript: str) -> dict:
     """
