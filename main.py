@@ -57,6 +57,11 @@ scaler_confidence = None
 scaler_fluency = None
 
 
+def load_tflite_model(model_path):
+    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()  # Allocate memory for the model
+    return interpreter
+
 @app.on_event("startup")
 def load_models():
     """Loads all ML models and scalers at startup."""
@@ -74,6 +79,16 @@ def load_models():
     except Exception as e:
         logger.error(f"❌ Model loading failed: {str(e)}")
         raise RuntimeError(f"Model loading failed: {str(e)}")
+
+
+
+
+
+
+
+
+
+
 
 @app.post("/process-video")
 async def process_video(request: Request):
@@ -94,7 +109,7 @@ async def process_video(request: Request):
             temp_media_path = temp_media.name
 
         # Step 2: Process video frames for confidence
-        video_confidence = round(float(process_video_frames(temp_media_path) * 100), 1)
+        video_confidences = process_video_frames(temp_media_path)
         
         # Step 3: Extract and validate audio
         temp_audio_path = extract_audio(temp_media_path)
@@ -104,28 +119,20 @@ async def process_video(request: Request):
                 "message": "Audio extraction failed",
             }
 
-        # Step 4: Analyze fluency, confidence & speech energy
-        audio_features = process_audio_features(temp_audio_path)
-        if audio_features["is_silent"]:
-            return {
-                "status": "failure",
-                "message": "There is no audio",
-            }
+        # # Step 4: Analyze fluency, confidence & speech energy
+        fluency_scores, confidence_scores = process_audio_features(temp_audio_path)
 
         # Step 5: Transcribe audio & detect filler words
         transcription = transcribe_audio(temp_audio_path)
-        fluency = predict_fluency(audio_features)
-        audio_conf = predict_confidence(audio_features)
 
-        # Step 6: Analyze grammar, enhance response, check relevance
-        analysis_result = analyze_response(question, transcription.get("transcription"))
-
+        # # Step 6: Analyze grammar, enhance response, check relevance
+        analysis_result = analyze_response(question, transcription)
         return {
             "status": "success",
             "message": "Processing complete",
-            "video_confidence": video_confidence,
-            "audio_confidence": round(float(audio_conf * 100), 1),
-            "fluency_percentage": round(float(fluency * 100), 1),
+            "video_confidence": video_confidences,
+            "audio_confidence": fluency_scores,
+            "fluency_percentage": confidence_scores,
             "transcription": transcription,
             "grammar": analysis_result
         }
@@ -138,18 +145,27 @@ async def process_video(request: Request):
             os.remove(temp_audio_path)
 
 
-def load_tflite_model(model_path):
-    interpreter = tf.lite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()  # Allocate memory for the model
-    return interpreter
 
-import cv2
-import numpy as np
 
-def process_video_frames(video_path: str) -> float:
+
+
+
+
+
+
+
+
+
+
+def process_video_frames(video_path: str, segment_duration: int = 5) -> list:
     cap = cv2.VideoCapture(video_path)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))  # Get frames per second
+    segment_frames = segment_duration * fps  # Number of frames per segment
+    confidences = []
+
     frames = []
-    
+    frame_count = 0
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -158,28 +174,54 @@ def process_video_frames(video_path: str) -> float:
             
             frame = cv2.resize(frame, (128, 128)) / 255.0  # Resize and normalize
             frames.append(frame)
-            for _ in range(9):  # Skip frames to reduce processing load
-                cap.read()
-                
-        if not frames:
-            return 0.0  # No valid frames, return 0 confidence
-        
-        frames = np.array(frames, dtype=np.float32)  # Convert list to NumPy array
+            frame_count += 1
 
-        # Get model input shape dynamically
-        input_shape = cnn_model.get_input_details()[0]['shape']  # (1, 128, 128, 3)
-        batch_size = input_shape[0]  # Typically 1 for inference
+            # Process each 5-second segment
+            if frame_count >= segment_frames:
+                if frames:
+                    frames = np.array(frames, dtype=np.float32)
 
-        # Ensure correct shape (batch_size, 128, 128, 3)
-        if frames.shape[0] != batch_size:
-            frames = np.expand_dims(frames[0], axis=0)  # Use first frame only
+                    # Ensure correct shape for model
+                    frames = np.expand_dims(frames[0], axis=0)  # Use first frame of segment
 
-        predictions = predict_with_tflite(cnn_model, frames)
-        
-        return float(np.mean(predictions))  # Average confidence across frames
-        
+                    segment_confidence = predict_with_tflite(cnn_model, frames)
+                    confidences.append(segment_confidence)
+
+                frames = []
+                frame_count = 0  # Reset for the next segment
+
+        return confidences  # List of confidence values per 5-sec segment
+
     finally:
         cap.release()
+
+def predict_with_tflite(interpreter, input_data):
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    # Ensure input data has the correct shape
+    input_shape = input_details[0]['shape']
+    input_data = np.array(input_data, dtype=np.float32).reshape(input_shape)
+
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.invoke()  # Run inference
+
+    output_data = interpreter.get_tensor(output_details[0]['index'])
+    return float(np.mean(output_data))  # Return mean confidence score
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def extract_audio(video_path: str) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
@@ -201,44 +243,47 @@ def extract_audio(video_path: str) -> str:
 
     return audio_path
 
-def predict_with_tflite(interpreter, input_data):
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
 
-    # Ensure input data has the correct shape
-    input_shape = input_details[0]['shape']
-    input_data = np.array(input_data, dtype=np.float32).reshape(input_shape)
-
-    interpreter.set_tensor(input_details[0]['index'], input_data)
-    interpreter.invoke()  # Run inference
-
-    output_data = interpreter.get_tensor(output_details[0]['index'])
-    return float(np.mean(output_data))  # Return mean confidence score
-
-def process_audio_features(audio_path: str) -> dict:
-    audio, sr = librosa.load(audio_path, sr=16000, duration=5)
-    audio = nr.reduce_noise(y=audio, sr=sr)
-    rms_energy = librosa.feature.rms(y=audio).mean()
+def process_audio_features(audio_path: str, segment_duration: int = 5) -> list:
+    audio, sr = librosa.load(audio_path, sr=16000)
+    total_duration = librosa.get_duration(y=audio, sr=sr)
     
-    silence_threshold = 0.005
-    is_silent = rms_energy < silence_threshold
+    fluency_scores = []
+    confidence_scores = []
+    
+    for start in range(0, int(total_duration), segment_duration):
+        end = start + segment_duration
+        audio_segment = audio[start * sr : end * sr]  
+        
+        if len(audio_segment) == 0:
+            fluency_scores.append(0.0)
+            confidence_scores.append(0.0)
+            continue
+        
+        audio_segment = nr.reduce_noise(y=audio_segment, sr=sr)
 
-    if is_silent:
-        return {
-            "mfcc": np.zeros(40),
-            "speech_rate": 0,
-            "pitch": [0],
+        rms_energy = librosa.feature.rms(y=audio_segment).mean()
+        silence_threshold = 0.005
+        is_silent = rms_energy < silence_threshold
+
+        if is_silent:
+            fluency_scores.append(0.0)
+            confidence_scores.append(0.0)
+            continue
+
+        features = {
+            "mfcc": librosa.feature.mfcc(y=audio_segment, sr=sr, n_mfcc=40).mean(axis=1),
+            "speech_rate": len(librosa.effects.split(audio_segment)[0]),
+            "pitch": librosa.yin(audio_segment, fmin=50, fmax=500) if len(audio_segment) > 0 else [0],
             "energy": rms_energy,
-            "is_silent": True
+            "is_silent": False
         }
 
-    return {
-        "mfcc": librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40).mean(axis=1),
-        "speech_rate": len(librosa.effects.split(audio)[0]),
-        "pitch": librosa.yin(audio, fmin=50, fmax=500) if len(audio) > 0 else [0],
-        "energy": rms_energy,
-        "is_silent": False
-    }
+        fluency_scores.append(predict_fluency(features))
+        confidence_scores.append(predict_confidence(features))
+
+    return fluency_scores, confidence_scores  
+
 
 def predict_fluency(features: dict) -> float:
     if features["is_silent"]:
@@ -249,7 +294,6 @@ def predict_fluency(features: dict) -> float:
     reshaped_features = scaled_features.reshape((1, 41, 1))
 
     return float(predict_with_tflite(audio_fluency_model, reshaped_features))
-
 
 def predict_confidence(features: dict) -> float:
     if features["is_silent"]:
@@ -266,91 +310,124 @@ def predict_confidence(features: dict) -> float:
     return float(predict_with_tflite(audio_confidence_model, reshaped_features))
 
 
+
+
+
+
+
+
+
+
+
 # Initialize Gemini AI client
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 def analyze_response(question: str, transcript: str) -> dict:
-    """Sends the transcript and question to Gemini AI for grammar correction and enhancement."""
+    """
+    Sends the transcript and question to Gemini AI for grammar correction,
+    enhancement, and filler word detection.
+    """
     try:
         model = genai.GenerativeModel("gemini-2.0-flash")
         prompt = f"""
-            Given the following interview question and candidate response (transcript), analyze the response using the following criteria:
+        You are an advanced AI language model evaluating a candidate’s response to an interview question.  
+        Your task is to analyze the response for **grammar correctness, fluency, conciseness, and filler word usage**.  
 
-            1. Identify and list grammar mistakes in an array called "grammar_mistakes."
-            2. Provide a more powerful, concise version of the response under "enhanced_response."
-            3. Offer constructive feedback in "feedback" to help the candidate improve their response.
+        ### **Instructions:**  
+        - **Identify grammar mistakes**, categorizing them into specific types.  
+        - **For each mistake, provide the incorrect version, the corrected version, and the type of mistake.**  
+        - **Detect filler words**, listing them along with their occurrence count.  
+        - **Provide an improved, more concise, and impactful version of the response.**  
 
-            Return the result in a structured JSON format as follows:
+        ### **Mistake Breakdown (In-Depth Categories):**  
+        1. **Tense Errors:** Incorrect verb tenses (e.g., *"I go to college last year"* → *"I went to college last year"*).  
+        2. **Subject-Verb Agreement:** Errors in subject-verb agreement (e.g., *"She go to work early"* → *"She goes to work early"*).  
+        3. **Pronoun Usage:** Incorrect pronoun choice or ambiguity (e.g., *"Me and him went to the store"* → *"He and I went to the store"*).  
+        4. **Preposition Errors:** Incorrect preposition usage (e.g., *"interested for"* → *"interested in"*).  
+        5. **Word Order (Syntax):** Improper sentence structure (e.g., *"Yesterday went I to the mall"* → *"Yesterday, I went to the mall"*).  
+        6. **Word Choice:** Use of incorrect words or awkward phrasing (e.g., *"Do the needful"* → *"Please take the necessary action"*).  
+        7. **Redundancy & Wordiness:** Unnecessary repetition or overly complex sentences (e.g., *"I personally think that in my opinion, I believe"* → *"I think"*).  
+        8. **Passive Voice Overuse:** Excessive use of passive voice (e.g., *"The project was completed by me"* → *"I completed the project"*).  
+
+        ### **Output Format (JSON):**  
+        {{
+          "grammar_accuracy": "XX%",  # Percentage of grammatically correct sentences.
+          "mistake_breakdown": [
             {{
-              "grammar_mistakes": ["List of grammar mistakes"],
-              "enhanced_response": "Improved and more concise version of the response",
-              "feedback": ["List of specific improvement suggestions"]
+              "incorrect": "Wrong sentence or phrase",
+              "correct": "Corrected sentence or phrase",
+              "type": "Mistake category (e.g., tense error, subject-verb agreement)"
+            }},
+            {{
+              "incorrect": "Another wrong sentence",
+              "correct": "Another corrected sentence",
+              "type": "Another mistake category"
             }}
+          ],
+          "enhanced_response": "A refined, more effective version of the response"
+        }}
 
-            Interview Question: "{question}"
-            Candidate Response (Transcript): "{transcript}"
+        ### **Input Data:**  
+        - **Interview Question:** "{question}"  
+        - **Candidate Response:** "{transcript}"  
+
+        Analyze the response and return structured JSON output.
         """
 
 
         response = model.generate_content(prompt)
-
-        # Extract text response & clean potential formatting issues
+        
+        # Extract and clean the response
         cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
 
         # Try parsing as JSON
         try:
             parsed_response = json.loads(cleaned_text)
-            return {
-                "grammar_mistakes": parsed_response.get("grammar_mistakes", []),
-                "enhanced_response": parsed_response.get("enhanced_response", "").strip(),
-                "feedback": parsed_response.get("feedback", [])
+            return{
+                "grammar_accuracy": parsed_response.get("grammar_accuracy", "N/A"),
+                "mistake_breakdown": parsed_response.get("mistake_breakdown", {}),
+                "enhanced_response": parsed_response.get("enhanced_response", "").strip()
             }
         except json.JSONDecodeError:
             return {
-                "grammar_mistakes": [],
-                "enhanced_response": cleaned_text, 
-                "feedback": []
+                "grammar_accuracy": "N/A",
+                "mistake_breakdown": {},
+                "enhanced_response": cleaned_text 
             }
-
+    
     except Exception as e:
         return {
-            "grammar_mistakes": [],
-            "enhanced_response": "Could not generate improved response.",
-            "feedback": []
+            "grammar_accuracy": "N/A",
+            "mistake_breakdown": {},
+            "enhanced_response": "Could not generate improved response."
         }
 
-# Define common filler words, including "aa"
-FILLER_WORDS = ["um", "uh", "like", "you know", "so", "actually", "basically", "right", "okay", "hmm"]
+
+
+
+
+
+
+
+
+
+
+
+
 
 def transcribe_audio(audio_path: str) -> dict:
-    """Transcribes audio, detects filler words, and analyzes speech energy for missing fillers like 'aa'."""
     recognizer = sr.Recognizer()
     
     try:
         with sr.AudioFile(audio_path) as source:
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
             audio_data = recognizer.record(source)
-            transcript = recognizer.recognize_google(audio_data).lower()  # Normalize case
-            
-            if not transcript.strip():
-                return {"transcription": "Could not process audio", "filler_words": {}, "total_fillers": 0, "energy": 0.0}
+            transcript = recognizer.recognize_google(audio_data)
 
-            # Regex-based filler word detection
-            filler_count = {word: len(re.findall(rf"\b{re.escape(word)}\b", transcript)) for word in FILLER_WORDS}
-            
-            total_fillers = sum(filler_count.values())
-
-            return {
-                "transcription": transcript,
-                "filler_words": {k: v for k, v in filler_count.items() if v > 0},  # Remove unused words
-                "total_fillers": total_fillers,
-            }
+            return transcript
 
     except (sr.UnknownValueError, sr.RequestError):
-        return {"transcription": "Could not process audio", "filler_words": {}, "total_fillers": 0, "energy": 0.0}
-
-
-
+        return "Could not process audio"
 
 if __name__ == "__main__":
     import uvicorn
