@@ -336,34 +336,11 @@ def analyze_response(question: str, transcript: str) -> dict:
         ### **Instructions:**  
         - **Identify grammar mistakes**, categorizing them into specific types.  
         - **For each mistake, provide the incorrect version, the corrected version, and the type of mistake.**  
-        - **Detect filler words**, listing them along with their occurrence count.  
         - **Provide an improved, more concise, and impactful version of the response.**  
-
-        ### **Mistake Breakdown (In-Depth Categories):**  
-        1. **Tense Errors:** Incorrect verb tenses (e.g., *"I go to college last year"* → *"I went to college last year"*).  
-        2. **Subject-Verb Agreement:** Errors in subject-verb agreement (e.g., *"She go to work early"* → *"She goes to work early"*).  
-        3. **Pronoun Usage:** Incorrect pronoun choice or ambiguity (e.g., *"Me and him went to the store"* → *"He and I went to the store"*).  
-        4. **Preposition Errors:** Incorrect preposition usage (e.g., *"interested for"* → *"interested in"*).  
-        5. **Word Order (Syntax):** Improper sentence structure (e.g., *"Yesterday went I to the mall"* → *"Yesterday, I went to the mall"*).  
-        6. **Word Choice:** Use of incorrect words or awkward phrasing (e.g., *"Do the needful"* → *"Please take the necessary action"*).  
-        7. **Redundancy & Wordiness:** Unnecessary repetition or overly complex sentences (e.g., *"I personally think that in my opinion, I believe"* → *"I think"*).  
-        8. **Passive Voice Overuse:** Excessive use of passive voice (e.g., *"The project was completed by me"* → *"I completed the project"*).  
 
         ### **Output Format (JSON):**  
         {{
           "grammar_accuracy": "XX%",  # Percentage of grammatically correct sentences.
-          "mistake_breakdown": [
-            {{
-              "incorrect": "Wrong sentence or phrase",
-              "correct": "Corrected sentence or phrase",
-              "type": "Mistake category (e.g., tense error, subject-verb agreement)"
-            }},
-            {{
-              "incorrect": "Another wrong sentence",
-              "correct": "Another corrected sentence",
-              "type": "Another mistake category"
-            }}
-          ],
           "enhanced_response": "A refined, more effective version of the response"
         }}
 
@@ -385,20 +362,17 @@ def analyze_response(question: str, transcript: str) -> dict:
             parsed_response = json.loads(cleaned_text)
             return{
                 "grammar_accuracy": parsed_response.get("grammar_accuracy", "N/A"),
-                "mistake_breakdown": parsed_response.get("mistake_breakdown", {}),
                 "enhanced_response": parsed_response.get("enhanced_response", "").strip()
             }
         except json.JSONDecodeError:
             return {
                 "grammar_accuracy": "N/A",
-                "mistake_breakdown": {},
                 "enhanced_response": cleaned_text 
             }
     
     except Exception as e:
         return {
             "grammar_accuracy": "N/A",
-            "mistake_breakdown": {},
             "enhanced_response": "Could not generate improved response."
         }
 
